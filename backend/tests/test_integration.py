@@ -12,7 +12,7 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE staff_session,staff_login_attempt,funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE staff_session,staff_login_attempt,funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding,catalog_entry,bank_statement RESTART IDENTITY CASCADE")
             conn.execute("UPDATE staff_credential SET password_hash=%s WHERE username=%s",(hash_password(os.environ["STAFF_PASSWORD"]),os.environ["STAFF_USER"]))
         client.headers["X-ASUFC-Request"]="1"
         assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==200
