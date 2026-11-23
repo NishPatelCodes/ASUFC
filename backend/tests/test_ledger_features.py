@@ -196,3 +196,29 @@ def test_migrations_are_recorded_once(client):
         migrate(c)
         versions = [r["version"] for r in c.execute("SELECT version FROM schema_migration ORDER BY version")]
     assert versions == [version for version, _, _ in MIGRATIONS]
+
+
+def test_encrypted_backup_round_trip_keeps_new_records(client):
+    from io import BytesIO
+    from app.main import db
+    from app.desktop_backup import restore_backup, write_backup, BackupError
+    source, budget = funded_budget(client)
+    tx = purchase(client, budget, cents=5_000)
+    create(client, f"/transactions/{tx['id']}/refunds", dict(refund_date=date.today().isoformat(), reason="Fictional return",
+           allocations=[dict(budget_id=budget["id"], cents=1_000)]))
+    create(client, "/bank-statements", {"statement_date": date.today().isoformat(), "cents": 1})
+    archive = BytesIO()
+    with db() as c:
+        write_backup(c, archive, "fictional backup passphrase")
+    tables = ("catalog_entry", "purchase_refund", "purchase_refund_allocation", "bank_statement", "funding_eligibility")
+    with db() as c:
+        before = {t: c.execute(f"SELECT count(*) AS n FROM {t}").fetchone()["n"] for t in tables}
+    archive.seek(0)
+    with db() as c:
+        restore_backup(c, archive, "fictional backup passphrase")
+        after = {t: c.execute(f"SELECT count(*) AS n FROM {t}").fetchone()["n"] for t in tables}
+    assert after == before and before["purchase_refund"] == 1
+    assert client.get("/budgets").json()[0]["remaining"] == 100_000 - 4_000
+    archive.seek(0)
+    with db() as c, pytest.raises(BackupError):
+        restore_backup(c, archive, "wrong passphrase")

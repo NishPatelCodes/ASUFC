@@ -657,6 +657,32 @@ def apply_staff_setup(setup: StaffSetup):
         audit(c, "starter_applied", "academic_year", saved_period["id"], stats)
         return stats
 
+class TrackerWorkbook(BaseModel):
+    content_base64: str = Field(max_length=6700000)
+    academic_year: str
+    starts_on: date
+    ends_on: date
+
+@router.post("/staff-setup/workbook-draft")
+def tracker_workbook_draft(p: TrackerWorkbook):
+    """Read the ASUFC budget tracker into a starter draft for review. Saves nothing."""
+    from base64 import b64decode
+    from binascii import Error as Base64Error
+    from .tracker_import import draft_from_workbook
+    validate_year_label(p.academic_year)
+    if not p.starts_on <= p.ends_on or p.starts_on.year != int(p.academic_year[:4]) or p.ends_on.year != int(p.academic_year[5:]):
+        bad("Reporting dates must be ordered and match the academic year")
+    try:
+        content = b64decode(p.content_base64, validate=True)
+    except (Base64Error, ValueError):
+        bad("Upload an XLSX workbook")
+    with db() as c:
+        catalog = c.execute("SELECT code,name FROM program ORDER BY code").fetchall()
+    try:
+        return draft_from_workbook(content, p.academic_year, p.starts_on, p.ends_on, catalog)
+    except ValueError as error:
+        bad(str(error))
+
 @router.get("/purchase-intake")
 def purchase_intake(year: str):
     validate_year_label(year)

@@ -17,7 +17,10 @@ TABLES = (
     "purchase_correction", "funding_receipt", "academic_period", "semester", "funding_transfer",
     "import_entry", "funding_transfer_void", "funding_purchase_type", "funding_eligibility",
     "staff_credential", "purchase_receipt_file", "purchase_intake",
+    "catalog_entry", "purchase_refund", "purchase_refund_allocation", "funding_return", "bank_statement",
 )
+# Backups from version 0.2 lack purchase_intake; backups before 0.5 lack the newer ledger tables.
+OLDEST_TABLES = set(TABLES[:TABLES.index("purchase_intake")])
 
 
 class BackupError(ValueError):
@@ -132,8 +135,7 @@ def restore_backup(connection, file, password):
     except (ValueError, UnicodeError):
         raise BackupError("The backup header could not be read") from None
     current = columns_by_table(connection)
-    previous_tables = set(TABLES) - {"purchase_intake"}
-    if not isinstance(columns, dict) or set(columns) not in (set(TABLES), previous_tables) or any(
+    if not isinstance(columns, dict) or not OLDEST_TABLES <= set(columns) <= set(TABLES) or any(
         not isinstance(fields, list) or not fields or any(not isinstance(field, str) for field in fields)
         or len(fields) != len(set(fields)) or not set(fields).issubset(current[table])
         for table, fields in columns.items()
@@ -165,3 +167,8 @@ def restore_backup(connection, file, password):
                 ))
     if file.read(1):
         raise BackupError("The backup has unexpected trailing data")
+    # Older backups predate consolidated rules, the name catalog and roles.
+    connection.execute("SELECT asufc_backfill_eligibility()")
+    connection.execute("SELECT asufc_backfill_catalog()")
+    connection.execute("""UPDATE staff_credential SET role='admin'
+        WHERE NOT EXISTS (SELECT 1 FROM staff_credential WHERE role='admin' AND active)""")

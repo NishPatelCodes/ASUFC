@@ -126,6 +126,25 @@ CREATE INDEX IF NOT EXISTS staff_login_attempt_user_idx ON staff_login_attempt(u
 """
 
 
+CATALOG_BACKFILL = r"""
+CREATE OR REPLACE FUNCTION asufc_backfill_catalog() RETURNS void LANGUAGE sql AS $$
+ INSERT INTO catalog_entry(kind,name,name_key)
+ SELECT DISTINCT ON (kind, asufc_name_key(name)) kind, regexp_replace(btrim(name), '\s+', ' ', 'g'), asufc_name_key(name)
+ FROM (
+  SELECT 'supplier' AS kind, supplier AS name FROM purchase
+  UNION ALL SELECT 'purchase_type', purchase_type FROM purchase
+  UNION ALL SELECT 'supplier', supplier FROM purchase_intake
+  UNION ALL SELECT 'purchase_type', purchase_type FROM purchase_intake
+  UNION ALL SELECT 'supplier', unnest(eligible_suppliers) FROM funding_eligibility
+  UNION ALL SELECT 'purchase_type', unnest(eligible_purchase_types) FROM funding_eligibility
+ ) names WHERE length(btrim(name)) > 0
+ ORDER BY kind, asufc_name_key(name), name
+ ON CONFLICT DO NOTHING;
+$$;
+SELECT asufc_backfill_catalog();
+"""
+
+
 def baseline():
     return Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
 
@@ -137,6 +156,7 @@ MIGRATIONS = (
     (4, "refunds, funding returns and pledge status", lambda: REFUNDS_AND_RETURNS),
     (5, "bank statement balances", lambda: BANK_STATEMENTS),
     (6, "named staff accounts", lambda: STAFF_ACCOUNTS),
+    (7, "reusable catalog backfill", lambda: CATALOG_BACKFILL),
 )
 
 
