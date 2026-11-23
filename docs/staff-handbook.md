@@ -10,7 +10,7 @@ Use the installed app for day-to-day work. The GitHub Pages demo contains fictio
 
 ## 2. Set up the 2026–27 ledger
 
-1. In a new ledger, open **Excel import** and select the private ASUFC starter file. Check its funding rows and the editable reporting dates. Click **Apply starter file** only after reviewing them.
+1. In a new ledger, open **Excel import**. Enter the academic year and select the ASUFC budget tracker workbook (.xlsx) or the private starter file (.json). The tracker's funding rows become funding sources and each expense becomes a pending purchase. Review the warnings, funding rows and editable reporting dates. Click **Apply starter file** only after reviewing them. If rows cannot be read, fix them in the workbook and upload it again.
 2. In **Funding & grants**, check supplier and purchase restrictions. Confirm expected amounts when funding is actually received. If a donation amount changes, update its award first and then record the received amount.
 3. In **Programs & budgets**, assign part of a confirmed funding balance to an eligible program. The same program can have several budget lines from different sources.
 4. In **Transactions**, select a row under **Pending purchases**. Check the amount, purchase date, receipt and funding source. Enter the verified total and its allocations. Add a verification note if the row is flagged or you change the amount or date. Confirm the purchase to include it in spending and reduce the assigned balances.
@@ -19,15 +19,19 @@ The starter file uses the tracker’s receipt statuses and the provided class an
 
 ## 3. Record and review purchases
 
-Enter the purchase date and final charge in **Transactions**. Choose the program and funding budget. Use **Add allocation** to split a purchase. Check the amount shown as unassigned before confirming. **Suggest allocations** uses the entered program, purchase type and supplier to find eligible budget lines. Review every suggestion before saving.
+Enter the purchase date and final charge in **Transactions**. Pick the supplier and purchase type from the suggested names where possible, so spending rules and reports match. Choose the program and funding budget. If the funding has expired since the purchase was made, the form asks for a late-entry reason. Use **Add allocation** to split a purchase. Check the amount shown as unassigned before confirming. **Suggest allocations** uses the entered program, purchase type and supplier to find eligible budget lines. Review every suggestion before saving.
 
 On the desktop app, open **Read a receipt photo** to get suggestions from a JPEG or PNG. Check the values, edit them if needed, and click **Copy reviewed values to purchase**. The form still requires your review and confirmation.
 
-In **History**, choose the purchase in **Purchase receipts** and attach a PDF, JPEG or PNG up to 5 MB. Use **Receipt to replace** and record a reason when uploading a replacement. The previous file remains available in history. For a wrong transaction, use **Correct a transaction** to record a linked replacement, or **Confirm void** to reverse the spending with a reason.
+In **History**, choose the purchase in **Purchase receipts** and attach a PDF, JPEG or PNG up to 5 MB. Use **Receipt to replace** and record a reason when uploading a replacement. The previous file remains available in history. For a wrong transaction, use **Correct a transaction** to record a linked replacement, or **Confirm void** to reverse the spending with a reason. Use **Record a refund** for money a store gives back, such as a missing item. The refund restores that amount to the budget that paid.
+
+In **Programs & budgets**, use **Merge duplicate names** when a supplier or purchase type was typed two ways. Every purchase and spending rule switches to the name you keep.
 
 ## 4. Report and reconcile
 
-Choose the academic year before opening a report. In **Reports**, select a semester or enter your own date range. Use **Financial insights** for monthly cash and purchasing credit totals, program budget use, pending funding and expiry alerts. In **Reconciliation**, run the internal ledger checks and download the balance workbook. Compare bank and supplier statements separately.
+Choose the academic year before opening a report. In **Reports**, select a semester or enter your own date range. Use **Financial insights** for monthly cash and purchasing credit totals, program budget use, pending funding and expiry alerts. In **Reconciliation**, run the internal ledger checks and download the balance workbook. Under **Bank balance check**, enter the balance and date from a bank statement. The app shows the difference from the cash it expects and lists likely reasons, such as pending purchases or receipts without a date. Compare supplier credit statements separately.
+
+In **Funding & grants**, mark pledges and estimates as **Unconfirmed** so they are shown apart from committed funding. Use **Return unused funds to a funder** when a grant requires unspent money to be paid back.
 
 In **Assistant**, ask a short finance question or choose a topic. Check the academic year and program shown with the answer. Use the link beneath the answer to review the ledger screen that supports it.
 
@@ -40,3 +44,7 @@ In **Assistant**, ask a short finance question or choose a topic. Check the acad
 5. When **Overview** reopens, check the latest purchases, receipt history, pending rows and reconciliation totals before making the recovered ledger the one staff use. Backups from 0.3 can be restored with their backup passphrase.
 
 Keep the previous ledger intact until recovery is verified. Contact the ASUFC project lead if the app gives a startup error, a backup will not restore or you need to hand over staff access.
+
+## 6. Staff accounts (web workspace)
+
+In the shared web workspace, each person signs in with their own account. An administrator opens **Account → Staff accounts** to add someone with a temporary password, reset a password or disable an account when a person leaves the board. Keep at least two administrators so access never depends on one person.

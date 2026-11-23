@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { cents, money, Transaction, Api } from '../api';
-import { DEMO, Data, Save, field, Input, ProgramSelect, Panel, Form } from '../ui';
+import { DEMO, Data, Save, field, Input, ProgramSelect, Panel, Form, CatalogLists } from '../ui';
+import { RefundForm } from './refunds';
 import { ReceiptFiles } from '../receipt-files';
 import type { PendingPurchase } from '../staff-setup';
 import { desktop } from '../desktop-backup';
@@ -48,6 +49,11 @@ export function PurchasePage({
     }
   };
   const assigned = splits.reduce((n, s) => n + safe(s.amount), 0);
+  const todayKey = new Date().toLocaleDateString('en-CA');
+  const lateEntry = splits.some((s) => {
+    const expiry = data.budgets.find((b) => String(b.id) === s.budget)?.expiry;
+    return !!expiry && expiry < todayKey;
+  });
   const update = (id: number, key: 'budget' | 'amount', value: string) =>
     setSplits((old) => old.map((s) => (s.id === id ? { ...s, [key]: value } : s)));
   return (
@@ -96,6 +102,7 @@ export function PurchasePage({
             supplier: field(f, 'supplier'),
             purchase_type: field(f, 'type'),
             description: field(f, 'description'),
+            late_entry_reason: field(f, 'late_entry_reason'),
             cents: amount,
             allocations: splits.map((s) => ({ budget_id: Number(s.budget), cents: cents(s.amount) })),
           };
@@ -119,8 +126,13 @@ export function PurchasePage({
       >
         <div className="twocol">
           <Input name="date" label="Purchase date" type="date" defaultValue={source?.purchase_date} />
-          <Input name="supplier" label="Supplier" defaultValue={source?.supplier} />
-          <Input name="type" label="Purchase type" defaultValue={source?.purchase_type} />
+          <Input name="supplier" label="Supplier" defaultValue={source?.supplier} list="catalog-supplier" />
+          <Input
+            name="type"
+            label="Purchase type"
+            defaultValue={source?.purchase_type}
+            list="catalog-purchase_type"
+          />
           <Input name="description" label="Description" required={false} defaultValue={source?.description} />
         </div>
         <label>
@@ -242,11 +254,21 @@ export function PurchasePage({
             />
           </>
         )}
+        <CatalogLists catalog={data.catalog} />
         <Input
           name="duplicate_reason"
           label="Duplicate review reason (only if a matching purchase is legitimate)"
           required={false}
         />
+        {lateEntry && (
+          <>
+            <p className="warning">
+              A selected funding source has expired. You can still record a purchase made on or before its
+              expiry date. Explain why it is being entered late.
+            </p>
+            <Input name="late_entry_reason" label="Late-entry reason" />
+          </>
+        )}
         <h3>Program and funding allocations</h3>
         {splits.map((s) => (
           <div className="split" key={s.id}>
@@ -444,6 +466,15 @@ export function History({
         />
       )}
       {!DEMO && (
+        <RefundForm
+          busy={busy}
+          save={save}
+          transactions={data.transactions.filter(
+            (t) => t.status === 'confirmed' && t.allocations.some((a) => a.academic_year === year),
+          )}
+        />
+      )}
+      {!DEMO && (
         <ReceiptFiles
           api={api}
           transactions={data.transactions.filter((t) => t.allocations.some((a) => a.academic_year === year))}
@@ -534,9 +565,22 @@ export function History({
                     <small>{t.purchase_type}</small>
                   </td>
                   <td>{t.description}</td>
-                  <td>{money(t.cents)}</td>
+                  <td>
+                    {money(t.cents)}
+                    {!!t.refunded_cents && (
+                      <small>
+                        Refunded {money(t.refunded_cents)} · net {money(t.cents - t.refunded_cents)}
+                      </small>
+                    )}
+                  </td>
                   <td>
                     {t.status}
+                    {t.refunds?.map((r) => (
+                      <small key={r.id}>
+                        Refund {r.refund_date} · {money(r.cents)} · {r.reason}
+                      </small>
+                    ))}
+                    {t.late_entry_reason && <small>Late entry: {t.late_entry_reason}</small>}
                     <small>{t.void_reason}</small>
                     {t.original_id && <small>Corrects #{t.original_id}</small>}
                     {t.replacement_id && <small>Replaced by #{t.replacement_id}</small>}

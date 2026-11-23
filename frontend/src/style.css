@@ -33,3 +33,12 @@ textarea:focus-visible{outline:3px solid #a888aa;outline-offset:2px}
 .spending-trends .cash::-moz-meter-bar { background: #702d42; }
 .spending-trends .credit::-moz-meter-bar { background: #365a64; }
 .receipt-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.signed-in{margin:0;padding:0 10px;font-size:12px;color:#dbc5d0;overflow-wrap:anywhere}
+.signed-in strong{color:white}
+.checkbox{display:flex;align-items:center;gap:8px;font-weight:500}
+.checkbox input{width:auto;margin:0;accent-color:#702d42}
+.catalog-list{list-style:none;padding:0;margin:0 0 14px;display:grid;gap:6px;max-height:260px;overflow:auto}
+.catalog-list small{margin-left:6px}
+.bank-check{margin:14px 0}
+.bank-check ul{margin:8px 0 0;padding-left:20px;display:grid;gap:4px}
+small.warning{display:inline-block;padding:2px 6px;margin-top:4px}

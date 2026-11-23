@@ -482,32 +482,3 @@ export function ExcelImport({
     </>
   );
 }
-export function Account({ api, onChanged }: { api: Api; onChanged: () => void }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <Panel title="Change staff password">
-      <p>Changing your password signs out every active session.</p>
-      <Form
-        busy={busy}
-        button="Change password"
-        onSubmit={async (f) => {
-          if (field(f, 'new') !== field(f, 'repeat')) throw new Error('Passwords differ');
-          setBusy(true);
-          try {
-            await api('/auth/password', 'POST', {
-              current_password: field(f, 'current'),
-              new_password: field(f, 'new'),
-            });
-            onChanged();
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <Input name="current" label="Current password" type="password" />
-        <Input name="new" label="New password (minimum 16 characters)" type="password" />
-        <Input name="repeat" label="Repeat new password" type="password" />
-      </Form>
-    </Panel>
-  );
-}

@@ -8,7 +8,7 @@ Reviewed November 20, 2026 against the staff branch based on `6ead0dd`. Sources,
 | --- | --- |
 | `backend/app/__init__.py` | Empty package marker. |
 | `backend/app/main.py` | Protected routes and parameterized SQL. Budget allocation, adjustments, purchases, imports, corrections and transfer rules now consult the effective eligibility lists. Duplicate purchases are serialized. The one shared account and unpaginated finance reads remain limitations. |
-| `backend/app/schema.sql` | Additive eligibility storage preserves existing single-value controls. Voids feed views used for active spending and transfers. Startup applies schema changes and still needs an explicit migration process before large deployments. |
+| `backend/app/schema.sql` | Additive eligibility storage preserves existing single-value controls. Voids feed views used for active spending and transfers. Startup applies numbered migrations from `migrations.py` once each, recorded in `schema_migration`. |
 | `backend/app/rules.py` | Checks exact integer-cent allocation totals, budget and funding capacity, expiry and program, supplier and purchase type. |
 | `backend/app/suggestions.py` | Shares spending eligibility and orders available sources by staff preference, then expiry and stable ID. Suggestions reserve no balance. |
 | `backend/app/reporting.py` | Groups allocation cents and deduplicates purchase counts. Checks reversed date bounds. |

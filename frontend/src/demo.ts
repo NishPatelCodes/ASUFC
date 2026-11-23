@@ -323,7 +323,24 @@ export function makeDemoApi(): Api {
         else if (p === '/audit') out = audit;
         else if (p === '/academic-years') out = periods;
         else if (p === '/funding-transfers') out = [];
-        else if (/^\/funding\/\d+\/receipts$/.test(p))
+        else if (p === '/catalog') {
+          // Fictional name list derived from the in-memory purchases.
+          const names = (kind: 'supplier' | 'purchase_type') =>
+            [
+              ...new Set(transactions.map((t) => (kind === 'supplier' ? t.supplier : t.purchase_type))),
+            ].sort();
+          let id = 0;
+          out = (['supplier', 'purchase_type'] as const).flatMap((kind) =>
+            names(kind).map((name) => ({
+              id: ++id,
+              kind,
+              name,
+              purchase_count: transactions.filter(
+                (t) => (kind === 'supplier' ? t.supplier : t.purchase_type) === name,
+              ).length,
+            })),
+          );
+        } else if (/^\/funding\/\d+\/receipts$/.test(p))
           out = receipts.filter((r) => r.funding_id === Number(p.split('/')[2]));
         else if (p === '/dashboard') {
           const fs = fundRows().filter((f) => f.academic_year === y),

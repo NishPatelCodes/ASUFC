@@ -40,6 +40,8 @@ export function FundingTable({ rows }: { rows: Funding[] }) {
                     Expires <time dateTime={f.expiry}>{f.expiry}</time>
                   </small>
                 )}
+                {f.commitment === 'unconfirmed' && <small className="warning">Unconfirmed pledge</small>}
+                {!!f.returned_cents && <small>Returned to funder {money(f.returned_cents)}</small>}
                 {!DEMO && <small>Carry-forward · {carryLabel(f)}</small>}
                 {!DEMO && f.notes && <small>{f.notes}</small>}
               </td>
@@ -99,7 +101,13 @@ export function FundingPage({
                 expected_date: field(f, 'expected_date') || null,
                 notes: field(f, 'notes'),
                 received_on: field(f, 'received_on') || null,
-                ...(!DEMO ? { carry_status: field(f, 'carry_status') } : {}),
+                ...(!DEMO
+                  ? {
+                      carry_status: field(f, 'carry_status'),
+                      commitment: field(f, 'commitment'),
+                      auto_budget: field(f, 'auto_budget') === 'yes',
+                    }
+                  : {}),
               })
             }
           >
@@ -138,12 +146,25 @@ export function FundingPage({
             )}
             <Input name="expiry" label="Expiry date" type="date" required={false} />
             {!DEMO && (
-              <label>
-                Carry-forward
-                <select name="carry_status">
-                  <CarryOptions />
-                </select>
-              </label>
+              <>
+                <label>
+                  Carry-forward
+                  <select name="carry_status">
+                    <CarryOptions />
+                  </select>
+                </label>
+                <label>
+                  Expected amount
+                  <select name="commitment">
+                    <option value="committed">Committed by the funder</option>
+                    <option value="unconfirmed">Unconfirmed pledge or estimate</option>
+                  </select>
+                </label>
+                <label className="checkbox">
+                  <input type="checkbox" name="auto_budget" value="yes" />
+                  Create the budget automatically (one eligible program only)
+                </label>
+              </>
             )}
           </Form>
         </Panel>
@@ -183,6 +204,10 @@ export function FundingPage({
           <FundingRulesForm programs={data.programs} rows={rows} save={save} busy={busy} />
           <FundingExpiryForm rows={rows} save={save} busy={busy} />
           <FundingAwardForm rows={rows} save={save} busy={busy} />
+          <div className="twocol">
+            <FundingCommitmentForm rows={rows} save={save} busy={busy} />
+            <FundingReturnForm rows={rows} save={save} busy={busy} />
+          </div>
         </>
       )}
       <ReceiptHistory api={api} rows={rows} />
@@ -588,6 +613,84 @@ export function ReceiptHistory({ api, rows }: { api: Api; rows: Funding[] }) {
           </tbody>
         </table>
       )}
+    </Panel>
+  );
+}
+
+function FundingCommitmentForm({ rows, save, busy }: { rows: Funding[]; save: Save; busy: boolean }) {
+  return (
+    <Panel title="Confirm or downgrade a pledge">
+      <p className="muted">Unconfirmed pledges are shown apart from committed expected funds.</p>
+      <Form
+        busy={busy}
+        button="Save pledge status"
+        onSubmit={async (f) =>
+          save(
+            '/funding/' + field(f, 'id') + '/commitment',
+            { commitment: field(f, 'commitment'), reason: field(f, 'reason') },
+            'PATCH',
+          )
+        }
+      >
+        <label>
+          Funding source
+          <select name="id" required>
+            <option value="">Choose source</option>
+            {rows.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.name} · {row.commitment === 'unconfirmed' ? 'Unconfirmed' : 'Committed'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Status
+          <select name="commitment">
+            <option value="committed">Committed by the funder</option>
+            <option value="unconfirmed">Unconfirmed pledge or estimate</option>
+          </select>
+        </label>
+        <Input name="reason" label="Evidence or reason" />
+      </Form>
+    </Panel>
+  );
+}
+
+function FundingReturnForm({ rows, save, busy }: { rows: Funding[]; save: Save; busy: boolean }) {
+  return (
+    <Panel title="Return unused funds to a funder">
+      <p className="muted">
+        Some grants require unspent money to be paid back. Release unused budget allocations first. The return
+        lowers the source's available funding and is counted as cash leaving the bank.
+      </p>
+      <Form
+        busy={busy}
+        button="Record return"
+        onSubmit={async (f) => {
+          if (!window.confirm('Record this return to the funder? It cannot be edited afterwards.'))
+            throw new Error('No changes made.');
+          await save('/funding/' + field(f, 'id') + '/returns', {
+            cents: cents(field(f, 'amount')),
+            returned_on: field(f, 'returned_on'),
+            reason: field(f, 'reason'),
+          });
+        }}
+      >
+        <label>
+          Funding source
+          <select name="id" required>
+            <option value="">Choose source</option>
+            {rows.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.name} · {money(row.unallocated_cents)} unallocated
+              </option>
+            ))}
+          </select>
+        </label>
+        <Input name="amount" label="Amount returned (CAD)" type="number" />
+        <Input name="returned_on" label="Date returned" type="date" />
+        <Input name="reason" label="Reason, e.g. grant terms require unused funds back" />
+      </Form>
     </Panel>
   );
 }

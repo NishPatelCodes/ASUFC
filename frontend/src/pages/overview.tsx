@@ -97,6 +97,18 @@ export function Overview({
               ['Expected credit', credit?.expected ?? 0],
               ['Unallocated cash', unallocated('cash')],
               ['Unallocated credit', unallocated('credit')],
+              ...((cash?.unconfirmed ?? 0) + (credit?.unconfirmed ?? 0) > 0
+                ? ([['Unconfirmed pledges', (cash?.unconfirmed ?? 0) + (credit?.unconfirmed ?? 0)]] as [
+                    string,
+                    number,
+                  ][])
+                : []),
+              ...((cash?.returned ?? 0) + (credit?.returned ?? 0) > 0
+                ? ([['Returned to funders', (cash?.returned ?? 0) + (credit?.returned ?? 0)]] as [
+                    string,
+                    number,
+                  ][])
+                : []),
             ]}
           />
           <p className="muted">

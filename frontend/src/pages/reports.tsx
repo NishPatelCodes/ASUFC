@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { money, Api, AuditEvent, downloadReport } from '../api';
-import { Data, Panel } from '../ui';
+import { Data, Panel, CatalogSelect } from '../ui';
 
 export function AuditLog({ events }: { events: AuditEvent[] }) {
   return (
@@ -176,10 +176,13 @@ export function Reports({ api, year, data }: { api: Api; year: string; data: Dat
               ))}
             </select>
           </label>
-          <label>
-            Supplier (exact name)
-            <input value={supplier} onChange={(e) => setSupplier(e.target.value)} />
-          </label>
+          <CatalogSelect
+            catalog={data.catalog}
+            kind="supplier"
+            label="Supplier"
+            value={supplier}
+            onChange={setSupplier}
+          />
           <label>
             Funding source
             <select value={funding} onChange={(e) => setFunding(e.target.value)}>
@@ -194,10 +197,13 @@ export function Reports({ api, year, data }: { api: Api; year: string; data: Dat
             </select>
           </label>
         </div>
-        <label>
-          Purchase type (exact name)
-          <input value={purchaseType} onChange={(e) => setPurchaseType(e.target.value)} />
-        </label>
+        <CatalogSelect
+          catalog={data.catalog}
+          kind="purchase_type"
+          label="Purchase type"
+          value={purchaseType}
+          onChange={setPurchaseType}
+        />
         <button
           disabled={!report || exporting}
           onClick={async () => {

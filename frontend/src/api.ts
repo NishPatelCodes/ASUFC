@@ -27,6 +27,8 @@ export type Funding = Partial<FundingEligibility> & {
   expiry: string | null;
   eligible_program: string | null;
   eligible_supplier: string | null;
+  returned_cents?: number;
+  commitment?: 'committed' | 'unconfirmed';
 };
 export type Budget = {
   id: number;
@@ -43,6 +45,9 @@ export type Transaction = {
   original_id: number | null;
   replacement_id: number | null;
   status: 'confirmed' | 'voided';
+  refunded_cents?: number;
+  refunds?: { id: number; refund_date: string; reason: string; actor: string; cents: number }[] | null;
+  late_entry_reason?: string;
   void_reason: string | null;
   voided_at: string | null;
   id: number;
@@ -69,6 +74,8 @@ export type Dashboard = {
     carried_in: number;
     carried_out: number;
     capacity: number;
+    unconfirmed?: number;
+    returned?: number;
   }[];
   programs: { program_code: string; allocated: number; spent: number }[];
   pending?: { count: number; cents: number };
@@ -159,3 +166,31 @@ export type FundingTransfer = {
   kind: string;
   created_at: string;
 };
+
+export async function fileBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let raw = '';
+  for (let i = 0; i < bytes.length; i += 8192) raw += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(raw);
+}
+
+export type CatalogEntry = {
+  id: number;
+  kind: 'supplier' | 'purchase_type';
+  name: string;
+  purchase_count: number;
+};
+export type BankStatement = {
+  id: number;
+  statement_date: string;
+  cents: number;
+  note: string;
+  actor: string;
+  ledger_cash_cents: number;
+  difference_cents: number;
+  undated_received_cents: number;
+  pending_count: number;
+  pending_cents: number;
+};
+export type StaffAccount = { username: string; role: 'admin' | 'staff'; active: boolean; created_at: string };
+export type Session = { username: string; role?: 'admin' | 'staff' };

@@ -9,6 +9,7 @@ import type {
   AuditEvent,
   AcademicPeriod,
   FundingTransfer,
+  CatalogEntry,
 } from './api';
 
 export const DEMO = import.meta.env.MODE === 'pages';
@@ -21,6 +22,7 @@ export type Data = {
   audit: AuditEvent[];
   periods: AcademicPeriod[];
   transfers: FundingTransfer[];
+  catalog: CatalogEntry[];
 };
 export type Save = (path: string, body: unknown, method?: string) => Promise<void>;
 export const pages = [
@@ -45,12 +47,14 @@ export function Input({
   type = 'text',
   required = true,
   defaultValue,
+  list,
 }: {
   name: string;
   label: string;
   type?: string;
   required?: boolean;
   defaultValue?: string;
+  list?: string;
 }) {
   return (
     <label>
@@ -60,6 +64,8 @@ export function Input({
         type={type}
         required={required}
         defaultValue={defaultValue}
+        list={list}
+        autoComplete={list ? 'off' : undefined}
         step={type === 'number' ? '0.01' : undefined}
         min={type === 'number' ? '0' : undefined}
       />
@@ -151,5 +157,51 @@ export function BalanceMetrics({ values }: { values: [string, number][] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/** Suggest the shared supplier and purchase type spellings in text inputs. */
+export function CatalogLists({ catalog }: { catalog: CatalogEntry[] }) {
+  return (
+    <>
+      {(['supplier', 'purchase_type'] as const).map((kind) => (
+        <datalist id={'catalog-' + kind} key={kind}>
+          {catalog
+            .filter((entry) => entry.kind === kind)
+            .map((entry) => (
+              <option key={entry.id} value={entry.name} />
+            ))}
+        </datalist>
+      ))}
+    </>
+  );
+}
+export function CatalogSelect({
+  catalog,
+  kind,
+  label,
+  value,
+  onChange,
+}: {
+  catalog: CatalogEntry[];
+  kind: CatalogEntry['kind'];
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const names = catalog.filter((entry) => entry.kind === kind).map((entry) => entry.name);
+  return (
+    <label>
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">All</option>
+        {value && !names.includes(value) && <option value={value}>{value}</option>}
+        {names.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

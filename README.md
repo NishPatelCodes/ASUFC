@@ -10,6 +10,8 @@ Development prototype. Use fictional data only; never upload real records or sec
 
 The Vite development proxy connects to the API at 127.0.0.1:8000. Public API documentation is disabled. Do not expose this development configuration publicly.
 
+Schema changes run automatically at startup as numbered migrations. Set `ASUFC_TIMEZONE` if the Food Cupboard is not on Atlantic time.
+
 Run `docker compose run --rm api python -m pytest` for backend unit tests. The PostgreSQL integration suite requires the disposable `asufc_test` database and environment in `.github/workflows/ci.yml`. Run `npm run build` and `npm test` from `frontend/` after `npm ci`.
 
 See docs/architecture.md and PROGRESS.md for limitations. No production readiness claim.
@@ -31,7 +33,7 @@ docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml 
 Open `http://127.0.0.1:8080` on the host. The gateway binds to loopback, and the API and PostgreSQL stay on the Compose network. Set `ASUFC_STAFF_PORT` in your private Compose environment if port 8080 is taken. The Compose project keeps its own PostgreSQL volume across restarts. Use the separate HTTPS configuration on an approved production host.
 
 ## Web staff credentials
-STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequent changes are stored as salted scrypt hashes. Change password in Account; all sessions are revoked. Trusted host operator recovery: `docker compose exec api python -m app.reset_password`. Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.
+STAFF_USER and STAFF_PASSWORD create the first administrator account (password minimum 16 characters); later changes are stored as salted scrypt hashes. Administrators add, disable and reset other named accounts under Account, and the audit log records which account made each change. Changing your password signs out your own sessions. Trusted host operator recovery: `docker compose exec api python -m app.reset_password` (add `--username NAME` for another account; the account is reactivated). Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.
 
 ## Funding rules
 

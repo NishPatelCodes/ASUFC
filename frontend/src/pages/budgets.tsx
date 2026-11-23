@@ -1,5 +1,6 @@
 import { cents, money } from '../api';
 import { DEMO, Data, Save, field, Input, ProgramSelect, Panel, Form } from '../ui';
+import { CatalogManager } from './catalog';
 
 export function BudgetsPage({
   data,
@@ -14,19 +15,7 @@ export function BudgetsPage({
 }) {
   return (
     <>
-      {!DEMO && (
-        <Panel title="Add a program">
-          <Form
-            busy={busy}
-            button="Save program"
-            onSubmit={async (f) => save('/programs', { code: field(f, 'code'), name: field(f, 'name') })}
-          >
-            <Input name="code" label="Program code" />
-            <Input name="name" label="Program name" />
-          </Form>
-        </Panel>
-      )}
-      <Panel title="Create custom program">
+      <Panel title="Add a program">
         <Form
           busy={busy}
           button="Add program"
@@ -129,6 +118,7 @@ export function BudgetsPage({
           </table>
         </div>
       </Panel>
+      {!DEMO && <CatalogManager catalog={data.catalog} save={save} busy={busy} />}
     </>
   );
 }

@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   makeApi,
+  CatalogEntry,
+  Session,
   Program,
   Funding,
   Budget,
@@ -24,9 +26,10 @@ import { FundingPage } from './pages/funding';
 import { BudgetsPage } from './pages/budgets';
 import { TransactionsPage, History } from './pages/purchases';
 import { AuditLog, Reports } from './pages/reports';
-import { AcademicYears, Reconciliation, ExcelImport, Account } from './pages/settings';
+import { AcademicYears, Reconciliation, ExcelImport } from './pages/settings';
+import { Account, BankBalanceCheck } from './pages/accounts';
 
-function Workspace({ api, logout }: { api: Api; logout?: () => void }) {
+function Workspace({ api, logout, session }: { api: Api; logout?: () => void; session?: Session }) {
   const [year, setYear] = useState('2026-2027');
   const [page, setPage] = useState<Page>('Overview');
   const [data, setData] = useState<Data | null>(null);
@@ -53,10 +56,21 @@ function Workspace({ api, logout }: { api: Api; logout?: () => void }) {
       api<AuditEvent[]>('/audit'),
       api<AcademicPeriod[]>('/academic-years'),
       api<FundingTransfer[]>('/funding-transfers'),
+      api<CatalogEntry[]>('/catalog'),
     ])
-      .then(([programs, funding, budgets, transactions, dashboard, audit, periods, transfers]) => {
+      .then(([programs, funding, budgets, transactions, dashboard, audit, periods, transfers, catalog]) => {
         if (active)
-          setData({ programs, funding, budgets, transactions, dashboard, audit, periods, transfers });
+          setData({
+            programs,
+            funding,
+            budgets,
+            transactions,
+            dashboard,
+            audit,
+            periods,
+            transfers,
+            catalog,
+          });
       })
       .catch((e) => {
         if (active) setError(e.message);
@@ -97,6 +111,12 @@ function Workspace({ api, logout }: { api: Api; logout?: () => void }) {
             </button>
           ))}
         </nav>
+        {session && !DEMO && (
+          <p className="signed-in">
+            Signed in as <strong>{session.username}</strong>
+            {session.role === 'admin' ? ' · Administrator' : ''}
+          </p>
+        )}
         {logout && (
           <button className="logout" onClick={logout}>
             Sign out
@@ -170,12 +190,15 @@ function Workspace({ api, logout }: { api: Api; logout?: () => void }) {
         ) : page === 'Academic years' ? (
           <AcademicYears data={data} save={save} busy={busy} />
         ) : page === 'Reconciliation' ? (
-          <Reconciliation api={api} year={year} />
+          <>
+            {!DEMO && <BankBalanceCheck api={api} />}
+            <Reconciliation api={api} year={year} />
+          </>
         ) : page === 'Account' ? (
           desktop ? (
             <DesktopBackup api={api} />
           ) : (
-            logout && <Account api={api} onChanged={logout} />
+            logout && <Account api={api} onChanged={logout} session={session} />
           )
         ) : (
           <>
@@ -203,14 +226,22 @@ function Workspace({ api, logout }: { api: Api; logout?: () => void }) {
   );
 }
 function WebApp() {
-  const [authenticated, setAuthenticated] = useState(false),
-    [checking, setChecking] = useState(true),
+  const api = useMemo(() => (DEMO ? makeDemoApi() : makeApi()), []);
+  const [session, setSession] = useState<Session | null>(null);
+  const authenticated = session !== null;
+  const setAuthenticated = (signedIn: boolean) => {
+    if (!signedIn) setSession(null);
+    else
+      api<Session>('/auth/session')
+        .then(setSession)
+        .catch(() => setSession(null));
+  };
+  const [checking, setChecking] = useState(true),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false);
-  const api = useMemo(() => (DEMO ? makeDemoApi() : makeApi()), []);
   useEffect(() => {
-    api('/auth/session')
-      .then(() => setAuthenticated(true))
+    api<Session>('/auth/session')
+      .then(setSession)
       .catch(() => {})
       .finally(() => setChecking(false));
   }, [api]);
@@ -219,6 +250,7 @@ function WebApp() {
     return (
       <Workspace
         api={api}
+        session={session}
         logout={() => {
           api('/auth/logout', 'POST')
             .then(() => setAuthenticated(false))
