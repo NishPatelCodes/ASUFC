@@ -60,7 +60,7 @@ def reconciliation_workbook(report):
     summary.append(["Issue count",len(report["issues"])])
     summary.append(["Scope","Internal ledger only; not bank statement reconciliation"])
     definitions=[
-        ("Funding",report["funding"],[("id","Funding ID"),("name","Funding source"),("kind","Type"),("expected_cents","Expected outstanding"),("received_cents","Received"),("carried_in_cents","Carry in"),("carried_out_cents","Carry out"),("capacity_cents","Net capacity"),("allocated_cents","Allocated"),("spent_cents","Spent"),("remaining_cents","Remaining"),("unallocated_cents","Unallocated")]),
+        ("Funding",report["funding"],[("id","Funding ID"),("name","Funding source"),("kind","Type"),("expected_cents","Expected outstanding"),("received_cents","Received"),("carried_in_cents","Carry in"),("carried_out_cents","Carry out"),("capacity_cents","Net capacity"),("allocated_cents","Allocated"),("spent_cents","Spent"),("remaining_cents","Remaining"),("unallocated_cents","Unallocated"),("returned_cents","Returned to funder")]),
         ("Budgets",report["budgets"],[("id","Budget ID"),("funding_id","Funding ID"),("program_code","Program"),("allocated_cents","Allocated"),("spent_cents","Spent"),("remaining_cents","Remaining")]),
         ("Issues",report["issues"],[("code","Issue"),("record_id","Record ID"),("expected","Expected (raw)"),("actual","Actual (raw)")])
     ]
@@ -68,7 +68,7 @@ def reconciliation_workbook(report):
         sh=wb.create_sheet(name)
         sh.append([label for _,label in cols])
         for r in rows:
-            sh.append([r[key]/100 if key.endswith("_cents") else r[key] for key,_ in cols])
+            sh.append([r.get(key,0)/100 if key.endswith("_cents") else r[key] for key,_ in cols])
             for i,(key,_) in enumerate(cols,1):
                 if key.endswith("_cents"): sh.cell(sh.max_row,i).number_format='"$"#,##0.00'
         sh.auto_filter.ref=sh.dimensions

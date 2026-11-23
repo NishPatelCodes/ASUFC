@@ -27,3 +27,10 @@ def test_earliest_expiry_first():
 def test_shared_funding_capacity():
     result=propose([row(1,fund_remaining=12000),row(2,funding_id=1,fund_remaining=12000)])
     assert result['unallocated_cents']==13000
+
+
+def test_late_entry_suggests_source_valid_on_purchase_date():
+    expired = date.today() - timedelta(days=2)
+    result = suggest_allocations([row(1, expiry=expired)], 5000, 'ASUFCGR', '2026-2027', 'cash', 'Test supplier',
+                                 expired - timedelta(days=1))
+    assert result['allocations'] == [{'budget_id': 1, 'cents': 5000}]

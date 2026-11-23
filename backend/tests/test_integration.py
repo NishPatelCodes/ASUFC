@@ -316,10 +316,14 @@ def test_legacy_funding_rules_can_be_cleared_without_reappearing(client):
     from app.main import db
     source = create(client, "/funding", dict(
         name="Fictional legacy source", academic_year="2026-2027", kind="cash", expected_cents=5_000,
-        received_cents=5_000, eligible_program="ASUFCGR", eligible_supplier="Fictional Store",
+        received_cents=5_000,
     ))
+    # Recreate a record written before rules moved to funding_eligibility, then run the migration backfill.
     with db() as c:
+        c.execute("DELETE FROM funding_eligibility WHERE funding_id=%s", (source["id"],))
+        c.execute("UPDATE funding SET eligible_program='ASUFCGR', eligible_supplier='Fictional Store' WHERE id=%s", (source["id"],))
         c.execute("INSERT INTO funding_purchase_type VALUES (%s,%s)", (source["id"], "Food"))
+        c.execute("SELECT asufc_backfill_eligibility()")
     previous = dict(eligible_programs=["ASUFCGR"], eligible_suppliers=["Fictional Store"], eligible_purchase_types=["Food"])
     listed = client.get("/funding").json()[0]
     assert {name: listed[name] for name in previous} == previous
@@ -350,8 +354,13 @@ def test_login_throttle_and_expiry(client):
     from app.main import db
     with db() as c: c.execute("UPDATE staff_session SET expires_at=now()-interval '1 second'")
     assert client.get("/funding").status_code==401
+    # Failed attempts against one username do not lock out other accounts.
     for _ in range(10):
         assert client.post("/auth/login",json={"username":"wrong","password":"wrong"}).status_code==401
+    assert client.post("/auth/login",json={"username":"wrong","password":"wrong"}).status_code==429
+    assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==200
+    for _ in range(10):
+        assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":"wrong-password"}).status_code==401
     assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==429
 
 def test_password_rotation_revokes_sessions(client):

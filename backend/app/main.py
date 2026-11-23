@@ -1,6 +1,5 @@
 import os
 import re
-import secrets
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -12,19 +11,23 @@ from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from hashlib import sha256
 from .assistant import MODEL, Topic, answer, mentioned_programs
-from .credentials import hash_password,verify_password,validate_password
+from .credentials import hash_password,validate_password
+from .auth import COOKIE, current_actor, make_bind_actor, make_staff, register_auth, token_hash
+from .clock import today
+from .migrations import migrate
 from pydantic import BaseModel, Field
 from .rules import restriction_allows, spending_restriction, validate_purchase
 from .suggestions import suggest_allocations
 from .receipt_files import register_receipts
+from .catalog import canonical, canonical_rules, register_catalog
+from .ledger import register_ledger
 
 def db():
     return psycopg.connect(row_factory=dict_row)
 
 def initialize_schema(connection):
-    connection.execute(Path(__file__).with_name("schema.sql").read_text(encoding="utf-8"))
+    migrate(connection)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -35,70 +38,19 @@ async def lifespan(app):
         if not conn.execute("SELECT 1 FROM staff_credential WHERE username=%s",(user,)).fetchone():
             password=os.environ.get("STAFF_PASSWORD","")
             validate_password(password)
-            conn.execute("INSERT INTO staff_credential(username,password_hash) VALUES (%s,%s)",(user,hash_password(password)))
+            conn.execute("INSERT INTO staff_credential(username,password_hash,role) VALUES (%s,%s,'admin')",(user,hash_password(password)))
     yield
 
-COOKIE="asufc_session"
-def token_hash(token):
-    return sha256(token.encode()).hexdigest()
-
-def staff(request: Request):
-    token=request.cookies.get(COOKIE,"")
-    if not token or len(token)>128: raise HTTPException(401,"Staff session required")
-    if request.method not in ("GET","HEAD","OPTIONS") and request.headers.get("X-ASUFC-Request")!="1":
-        raise HTTPException(403,"Missing request protection header")
-    with db() as c:
-        row=c.execute("SELECT username FROM staff_session WHERE token_hash=%s AND expires_at>now()",(token_hash(token),)).fetchone()
-    if not row or row["username"]!=os.environ.get("STAFF_USER","staff"): raise HTTPException(401,"Staff session expired")
-    return row["username"]
+staff=make_staff(db)
+bind_actor=make_bind_actor(staff)
 
 app = FastAPI(title="ASUFC development API", lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-router=APIRouter(dependencies=[Depends(staff)])
+router=APIRouter(dependencies=[Depends(bind_actor)])
 
 @app.exception_handler(RequestValidationError)
 async def safe_validation_error(request: Request, exc: RequestValidationError):
     # Validation errors must not echo credentials, uploaded data or arbitrary input.
     return JSONResponse(status_code=422,content={"detail":"Invalid request fields or values"},headers={"Cache-Control":"no-store"})
-
-class Login(BaseModel):
-    username: str = Field(max_length=200)
-    password: str = Field(max_length=1024)
-
-@app.post("/auth/login")
-def login(p: Login,request: Request,response: Response):
-    if request.headers.get("X-ASUFC-Request")!="1": raise HTTPException(403,"Missing request protection header")
-    user=os.environ.get("STAFF_USER","staff")
-    # Global account throttle suits a single designated staff account.
-    with db() as c:
-        c.execute("SELECT pg_advisory_xact_lock(2663002)")
-        c.execute("DELETE FROM staff_login_attempt WHERE attempted_at<now()-interval '15 minutes'")
-        attempts=c.execute("SELECT count(*) AS n FROM staff_login_attempt").fetchone()["n"]
-        if attempts>=10: raise HTTPException(429,"Too many attempts; try again in 15 minutes")
-        credential=c.execute("SELECT password_hash FROM staff_credential WHERE username=%s",(user,)).fetchone()
-        valid=secrets.compare_digest(p.username.encode(),user.encode()) & verify_password(p.password,credential["password_hash"])
-        if not valid:
-            c.execute("INSERT INTO staff_login_attempt DEFAULT VALUES")
-        else:
-            c.execute("DELETE FROM staff_login_attempt")
-            c.execute("DELETE FROM staff_session WHERE expires_at<=now()")
-            previous=request.cookies.get(COOKIE,"")
-            if previous and len(previous)<=128: c.execute("DELETE FROM staff_session WHERE token_hash=%s",(token_hash(previous),))
-            token=secrets.token_urlsafe(32)
-            c.execute("INSERT INTO staff_session(token_hash,username,expires_at) VALUES (%s,%s,now()+interval '8 hours')",(token_hash(token),user))
-    if not valid: raise HTTPException(401,"Invalid staff credentials")
-    response.set_cookie(COOKIE,token,max_age=28800,httponly=True,secure=os.getenv("SESSION_SECURE","1")!="0",samesite="strict",path="/")
-    response.headers["Cache-Control"]="no-store"
-    return {"username":user}
-
-@router.get("/auth/session")
-def session(username: str = Depends(staff)):
-    return {"username":username}
-
-@router.post("/auth/logout")
-def logout(request: Request,response: Response):
-    with db() as c: c.execute("DELETE FROM staff_session WHERE token_hash=%s",(token_hash(request.cookies[COOKIE]),))
-    response.delete_cookie(COOKIE,path="/",secure=os.getenv("SESSION_SECURE","1")!="0",httponly=True,samesite="strict")
-    return {"ok":True}
 
 @app.middleware("http")
 async def no_cache(request,call_next):
@@ -132,6 +84,8 @@ class Funding(BaseModel):
     expected_date: date | None = None
     notes: str = Field(default="",max_length=2000)
     received_on: date | None = None
+    commitment: Literal["committed","unconfirmed"] = "committed"
+    auto_budget: bool = False
 
 class Receipt(BaseModel):
     received_cents: int = Field(ge=0,le=10**12)
@@ -154,14 +108,15 @@ class Purchase(BaseModel):
     cents: int = Field(gt=0,le=10**12)
     allocations: list[Split] = Field(min_length=1,max_length=100)
     duplicate_reason: str = Field(default="",max_length=1000)
+    late_entry_reason: str = Field(default="",max_length=1000)
 
 def audit(c, action, entity, entity_id, details):
-    c.execute('INSERT INTO audit_event(actor,action,entity,entity_id,details) VALUES (%s,%s,%s,%s,%s)',(os.environ.get('STAFF_USER','staff'),action,entity,entity_id,Jsonb(jsonable_encoder(details))))
+    c.execute('INSERT INTO audit_event(actor,action,entity,entity_id,details) VALUES (%s,%s,%s,%s,%s)',(current_actor(),action,entity,entity_id,Jsonb(jsonable_encoder(details))))
 
 
 def add_receipt(c,funding_id,cents,received_on):
-    if received_on and received_on>date.today(): bad("Receipt date cannot be in the future")
-    c.execute("INSERT INTO funding_receipt(funding_id,cents,received_on,actor) VALUES (%s,%s,%s,%s)",(funding_id,cents,received_on,os.environ.get("STAFF_USER","staff")))
+    if received_on and received_on>today(): bad("Receipt date cannot be in the future")
+    c.execute("INSERT INTO funding_receipt(funding_id,cents,received_on,actor) VALUES (%s,%s,%s,%s)",(funding_id,cents,received_on,current_actor()))
 
 
 def bad(message):
@@ -238,29 +193,35 @@ def add_funding(f: Funding):
 
 def save_funding(c, f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
-    has_new_rules = any(getattr(f, field) is not None for field in ELIGIBILITY_FIELDS)
     if ((f.eligible_program and f.eligible_programs is not None)
         or (f.eligible_supplier and f.eligible_suppliers is not None)):
         bad("Use one form of each spending rule")
     validate_year_label(f.academic_year)
     if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
-    if has_new_rules:
-        rules = normalize_eligibility(
-            f.eligible_programs if f.eligible_programs is not None else ([f.eligible_program] if f.eligible_program else []),
-            f.eligible_suppliers if f.eligible_suppliers is not None else ([f.eligible_supplier] if f.eligible_supplier else []),
-            f.eligible_purchase_types or [],
-        )
-        verify_eligible_programs(c, rules["eligible_programs"])
+    # Rules are always stored in funding_eligibility; the single-value fields
+    # remain accepted for older clients and starter files.
+    rules = canonical_rules(c, normalize_eligibility(
+        f.eligible_programs if f.eligible_programs is not None else ([f.eligible_program] if f.eligible_program else []),
+        f.eligible_suppliers if f.eligible_suppliers is not None else ([f.eligible_supplier] if f.eligible_supplier else []),
+        f.eligible_purchase_types or [],
+    ))
+    verify_eligible_programs(c, rules["eligible_programs"])
+    if f.auto_budget and (len(rules["eligible_programs"]) != 1 or not f.received_cents):
+        bad("An automatic budget needs exactly one eligible program and a confirmed amount")
+    if f.auto_budget and f.expiry and f.expiry < today(): bad("Funding expired")
     carry_status = f.carry_status or ("allowed" if f.carry_eligible else "unconfirmed")
-    created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes,carry_eligible,carry_prohibited)
-     VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s,%(carry_prohibited)s) RETURNING *""",
+    created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,organization,source_type,recurring,expected_date,notes,carry_eligible,carry_prohibited,commitment)
+     VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s,%(carry_prohibited)s,%(commitment)s) RETURNING *""",
      f.model_dump() | {"carry_eligible": carry_status == "allowed", "carry_prohibited": carry_status == "prohibited"}).fetchone()
-    if has_new_rules:
-        store_funding_eligibility(c, created["id"], rules)
+    store_funding_eligibility(c, created["id"], rules)
     if f.received_cents:
         add_receipt(c,created["id"],f.received_cents,f.received_on)
     created = funding_rule_fields(created | funding_eligibility(c, created["id"]))
     audit(c,"created","funding",created["id"],created)
+    if f.auto_budget:
+        budget=c.execute("INSERT INTO budget(funding_id,program_code,cents) VALUES (%s,%s,%s) RETURNING *",
+                         (created["id"],rules["eligible_programs"][0],f.received_cents)).fetchone()
+        audit(c,"created","budget",budget["id"],budget|{"automatic":True})
     return created
 
 @router.patch("/funding/{funding_id}/received")
@@ -311,7 +272,7 @@ def add_budget(b: Budget):
         if not c.execute("SELECT 1 FROM program WHERE code=%s",(b.program_code,)).fetchone(): bad("Unknown program")
         if not restriction_allows(funding_eligibility(c, b.funding_id), "eligible_program", b.program_code):
             bad("Program not eligible")
-        if f["expiry"] and f["expiry"] < date.today(): bad("Funding expired")
+        if f["expiry"] and f["expiry"] < today(): bad("Funding expired")
         used=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(b.funding_id,)).fetchone()["n"]
         if used+b.cents>capacity(c,f["id"]): bad("Insufficient unallocated confirmed funding")
         if c.execute("SELECT 1 FROM budget WHERE funding_id=%s AND program_code=%s",(b.funding_id,b.program_code)).fetchone(): bad("Budget already exists")
@@ -339,6 +300,8 @@ def record(p: Purchase):
 
 
 def save_purchase(c,p):
+    p=p.model_copy(update={"supplier":canonical(c,"supplier",p.supplier),"purchase_type":canonical(c,"purchase_type",p.purchase_type)})
+    if p.purchase_date>today(): bad("Purchase date cannot be in the future")
     ids=[a.budget_id for a in p.allocations]
     # Serialize writers by funding source, then read fresh balances.
     c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s)) ORDER BY id FOR UPDATE",(ids,)).fetchall()
@@ -348,10 +311,10 @@ def save_purchase(c,p):
     for year in {a["academic_year"] for a in splits}:
         period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(year,)).fetchone()
         if period and not period["starts_on"] <= p.purchase_date <= period["ends_on"]: bad("Purchase date outside configured academic year")
-    try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier,p.purchase_type)
+    try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier,p.purchase_type,today(),p.late_entry_reason)
     except ValueError as e: bad(str(e))
     if c.execute("SELECT 1 FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id WHERE v.purchase_id IS NULL AND p.purchase_date=%s AND lower(trim(p.supplier))=lower(trim(%s)) AND p.cents=%s",(p.purchase_date,p.supplier,p.cents)).fetchone() and not p.duplicate_reason.strip(): bad("Possible duplicate purchase; provide a review reason if legitimate")
-    tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
+    tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents,late_entry_reason) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s,%(late_entry_reason)s) RETURNING *",p.model_dump()|{"late_entry_reason":p.late_entry_reason.strip()}).fetchone()
     for a in p.allocations:
         c.execute("INSERT INTO allocation VALUES (%s,%s,%s)",(tx["id"],a.budget_id,a.cents))
     audit(c,"created","purchase",tx["id"],p.model_dump())
@@ -360,7 +323,7 @@ def save_purchase(c,p):
 @router.get("/transactions")
 def transactions():
     with db() as c:
-        return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT replacement_id FROM purchase_correction WHERE original_id=p.id) AS replacement_id, (SELECT original_id FROM purchase_correction WHERE replacement_id=p.id) AS original_id, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
+        return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT replacement_id FROM purchase_correction WHERE original_id=p.id) AS replacement_id, (SELECT original_id FROM purchase_correction WHERE replacement_id=p.id) AS original_id, COALESCE((SELECT sum(cents) FROM purchase_refund_allocation r WHERE r.purchase_id=p.id),0) AS refunded_cents, (SELECT json_agg(json_build_object('id',r.id,'refund_date',r.refund_date,'reason',r.reason,'actor',r.actor,'cents',(SELECT sum(x.cents) FROM purchase_refund_allocation x WHERE x.refund_id=r.id)) ORDER BY r.id) FROM purchase_refund r WHERE r.purchase_id=p.id) AS refunds, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
         FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=p.id) AS allocations FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id ORDER BY p.purchase_date DESC,p.id DESC""").fetchall()
 
 @router.get("/dashboard")
@@ -368,7 +331,7 @@ def dashboard(year: str = "2026-2027"):
     validate_year_label(year)
     with db() as c:
         c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected, sum(carried_in_cents) AS carried_in, sum(carried_out_cents) AS carried_out, sum(capacity_cents) AS capacity,
+        return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, COALESCE(sum(expected_cents-received_cents) FILTER (WHERE commitment='committed'),0) AS expected, COALESCE(sum(expected_cents-received_cents) FILTER (WHERE commitment='unconfirmed'),0) AS unconfirmed, sum(returned_cents) AS returned, sum(carried_in_cents) AS carried_in, sum(carried_out_cents) AS carried_out, sum(capacity_cents) AS capacity,
         sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
         FROM funding_capacity f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
         "programs":c.execute("""SELECT b.program_code, sum(b.cents) AS allocated,
@@ -452,7 +415,7 @@ def void_purchase(purchase_id: int, change: ChangeReason):
         c.execute("SELECT id FROM funding WHERE id IN (SELECT b.funding_id FROM budget b JOIN allocation a ON a.budget_id=b.id WHERE a.purchase_id=%s) ORDER BY id FOR UPDATE",(purchase_id,)).fetchall()
         if c.execute("SELECT 1 FROM purchase_void WHERE purchase_id=%s",(purchase_id,)).fetchone():
             raise HTTPException(409,"Purchase already voided")
-        result=c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(purchase_id,change.reason.strip(),os.environ.get("STAFF_USER","staff"))).fetchone()
+        result=c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(purchase_id,change.reason.strip(),current_actor())).fetchone()
         audit(c,"voided","purchase",purchase_id,{"reason":change.reason.strip(),"original_cents":p["cents"]})
         return result
 
@@ -469,7 +432,7 @@ def adjust_budget(budget_id: int, change: BudgetChange):
         if change.cents < spent: bad("Budget cannot be less than confirmed spending")
         if change.cents+other > capacity(c,f["id"]): bad("Insufficient confirmed funding")
         if change.cents > b["cents"]:
-            if f["expiry"] and f["expiry"] < date.today(): bad("Funding expired")
+            if f["expiry"] and f["expiry"] < today(): bad("Funding expired")
             if not restriction_allows(funding_eligibility(c, f["id"]), "eligible_program", b["program_code"]):
                 bad("Program not eligible")
         result=c.execute("UPDATE budget SET cents=%s WHERE id=%s RETURNING *",(change.cents,budget_id)).fetchone()
@@ -489,7 +452,7 @@ def select_report_rows(c, year, start=None, end=None, program=None, supplier=Non
     except ValueError as e:
         bad(str(e))
     query = """SELECT p.id AS purchase_id,p.purchase_date,p.supplier,p.purchase_type,p.description,b.program_code,f.id AS funding_id,f.name AS funding_name,f.kind,a.cents
-    FROM active_allocation a JOIN purchase p ON p.id=a.purchase_id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s"""
+    FROM active_allocation a JOIN purchase p ON p.id=a.purchase_id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s AND a.cents>0"""
     params = [year]
     for value, clause in [(start,"p.purchase_date >= %s"),(end,"p.purchase_date <= %s"),(program,"b.program_code = %s"),(supplier,"lower(p.supplier) = lower(%s)"),(funding_id,"f.id = %s"),(purchase_type,"lower(p.purchase_type) = lower(%s)")]:
         if value is not None:
@@ -532,7 +495,7 @@ def financial_insights(year: str, program: ProgramCode | None = None):
         pending = c.execute("""SELECT count(*) AS count FROM purchase_intake
             WHERE academic_year=%s AND confirmed_purchase_id IS NULL
             AND (%s::text IS NULL OR program_code=%s)""", (year, program, program)).fetchone()["count"]
-        return analyze(spending, budgets, sources, period, date.today()) | {"pending_purchases": pending}
+        return analyze(spending, budgets, sources, period, today()) | {"pending_purchases": pending}
 
 class AssistantQuestion(BaseModel):
     year: str
@@ -595,13 +558,14 @@ def correct_purchase(purchase_id: int, change: Correction):
         original=c.execute("SELECT * FROM purchase WHERE id=%s FOR UPDATE",(purchase_id,)).fetchone()
         if not original: raise HTTPException(404,"Unknown purchase")
         if c.execute("SELECT 1 FROM purchase_void WHERE purchase_id=%s",(purchase_id,)).fetchone(): raise HTTPException(409,"Purchase already voided")
+        if c.execute("SELECT 1 FROM purchase_refund WHERE purchase_id=%s",(purchase_id,)).fetchone(): bad("This purchase has recorded refunds. Void it with a reason and record the net purchase instead")
         ids=[a.budget_id for a in change.replacement.allocations]
         # Acquire old and new funding locks in one stable order.
         c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s) OR id IN (SELECT budget_id FROM allocation WHERE purchase_id=%s)) ORDER BY id FOR UPDATE",(ids,purchase_id)).fetchall()
         old_year=c.execute("SELECT DISTINCT f.academic_year FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=%s",(purchase_id,)).fetchall()
         new_year=c.execute("SELECT DISTINCT f.academic_year FROM budget b JOIN funding f ON f.id=b.funding_id WHERE b.id=ANY(%s)",(ids,)).fetchall()
         if old_year!=new_year: bad("Correction must stay in original academic year")
-        c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s)",(purchase_id,change.reason.strip(),os.environ.get("STAFF_USER","staff")))
+        c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s)",(purchase_id,change.reason.strip(),current_actor()))
         replacement=save_purchase(c,change.replacement)
         c.execute("INSERT INTO purchase_correction VALUES (%s,%s)",(purchase_id,replacement["id"]))
         audit(c,"corrected","purchase",purchase_id,{"replacement_id":replacement["id"],"reason":change.reason.strip()})
@@ -685,6 +649,7 @@ def apply_staff_setup(setup: StaffSetup):
         for grant in setup.funding:
             save_funding(c, grant)
         for row in setup.purchases:
+            row=row.model_copy(update={"supplier":canonical(c,"supplier",row.supplier),"purchase_type":canonical(c,"purchase_type",row.purchase_type)})
             c.execute("""INSERT INTO purchase_intake(academic_year,program_code,purchase_date,supplier,purchase_type,
                 description,cents,notes,verify_charge) VALUES (%(year)s,%(program_code)s,%(purchase_date)s,%(supplier)s,
                 %(purchase_type)s,%(description)s,%(cents)s,%(notes)s,%(verify_charge)s)""", row.model_dump() | {"year": year})
@@ -795,12 +760,12 @@ def carry_forward(funding_id: int,p: CarryTransfer):
         dst=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(p.destination_year,)).fetchone()
         if not src or not dst: bad("Configure both academic years first")
         if int(p.destination_year[:4])!=int(source["academic_year"][:4])+1 or dst["starts_on"]<=src["ends_on"]: bad("Destination must be the next academic year")
-        if source["expiry"] and source["expiry"]<max(dst["starts_on"],date.today()): bad("Funding expires before transfer can be used")
+        if source["expiry"] and source["expiry"]<max(dst["starts_on"],today()): bad("Funding expires before transfer can be used")
         reserved=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(funding_id,)).fetchone()["n"]
         if p.cents>capacity(c,funding_id)-reserved: bad("Release unused budget allocations before transferring")
         # A transfer creates a new funding bucket with no new award or receipt.
-        dest=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,notes,carry_eligible)
-        VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,false,%s,false) RETURNING *""",(source["name"],p.destination_year,source["kind"],source["expiry"],source["eligible_program"],source["eligible_supplier"],source["organization"],source["source_type"],source["notes"])).fetchone()
+        dest=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,organization,source_type,recurring,notes,carry_eligible)
+        VALUES (%s,%s,%s,0,0,%s,%s,%s,false,%s,false) RETURNING *""",(source["name"],p.destination_year,source["kind"],source["expiry"],source["organization"],source["source_type"],source["notes"])).fetchone()
         store_funding_eligibility(c, dest["id"], funding_eligibility(c, funding_id))
         transfer=c.execute("INSERT INTO funding_transfer(source_id,destination_id,cents,reason) VALUES (%s,%s,%s,%s) RETURNING *",(funding_id,dest["id"],p.cents,p.reason.strip())).fetchone()
         audit(c,"carried_forward","funding",funding_id,transfer)
@@ -823,7 +788,9 @@ def reconciliation_report(year: str = "2026-2027"):
         allocations=c.execute("SELECT * FROM allocation").fetchall()
         receipts=c.execute("SELECT * FROM funding_receipt").fetchall()
         transfers=c.execute("SELECT * FROM active_funding_transfer").fetchall()
-        return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year)
+        refunds=c.execute("SELECT * FROM purchase_refund_allocation").fetchall()
+        returns=c.execute("SELECT * FROM funding_return").fetchall()
+        return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year,refunds,returns)
 
 @router.get("/reports/reconciliation.xlsx")
 def reconciliation_export(year: str = "2026-2027"):
@@ -853,7 +820,7 @@ def import_rows(c,parsed):
     for row in parsed["rows"]:
         ident=row["external_id"]
         if c.execute("SELECT 1 FROM import_entry WHERE external_id=%s",(ident,)).fetchone(): bad("Already imported external ID: "+ident)
-        p=Purchase.model_validate({k:v for k,v in row.items() if k not in ("row","external_id")})
+        p=Purchase.model_validate({k:v for k,v in row.items() if k not in ("row","external_id")}|{"late_entry_reason":"Historical workbook import"})
         # Exact date, supplier and amount matches are conservative review blockers.
         if c.execute("SELECT 1 FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id WHERE v.purchase_id IS NULL AND p.purchase_date=%s AND lower(trim(p.supplier))=lower(trim(%s)) AND p.cents=%s",(p.purchase_date,p.supplier,p.cents)).fetchone(): bad("Possible duplicate purchase on row "+str(row["row"]))
         tx=save_purchase(c,p)
@@ -883,18 +850,6 @@ def commit_import(p: ImportWorkbook):
         audit(c,"imported","purchase",result[0],{"purchase_ids":result})
         return {"imported":len(result),"purchase_ids":result}
 
-class NewProgram(BaseModel):
-    code: str = Field(pattern=r"^[A-Z0-9&_-]{2,40}$")
-    name: str = Field(min_length=1,max_length=200)
-
-@router.post("/programs",status_code=201)
-def create_program(p: NewProgram):
-    if not p.name.strip(): bad("Name required")
-    with db() as c:
-        row=c.execute("INSERT INTO program(code,name) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING *",(p.code,p.name.strip())).fetchone()
-        if not row: raise HTTPException(409,"Program code already exists")
-        return row
-
 @router.post("/funding-transfers/{transfer_id}/reverse")
 def reverse_transfer(transfer_id: int,p: ChangeReason):
     if not p.reason.strip(): bad("Reason required")
@@ -906,7 +861,7 @@ def reverse_transfer(transfer_id: int,p: ChangeReason):
         reserved=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(t["destination_id"],)).fetchone()["n"]
         spent=c.execute("SELECT COALESCE(sum(a.cents),0) AS n FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=%s",(t["destination_id"],)).fetchone()["n"]
         if capacity(c,t["destination_id"])-t["cents"]<max(reserved,spent,0): bad("Destination funds are allocated, spent or transferred onward")
-        row=c.execute("INSERT INTO funding_transfer_void(transfer_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(transfer_id,p.reason.strip(),os.environ.get("STAFF_USER","staff"))).fetchone()
+        row=c.execute("INSERT INTO funding_transfer_void(transfer_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(transfer_id,p.reason.strip(),current_actor())).fetchone()
         audit(c,"transfer_reversed","funding",t["source_id"],{"transfer_id":transfer_id,"reason":p.reason.strip()})
         return row
 
@@ -989,7 +944,9 @@ def update_eligibility(funding_id: int, change: FundingEligibilityChange):
     if not reason: bad("Reason required")
     rules = normalize_eligibility(change.eligible_programs, change.eligible_suppliers, change.eligible_purchase_types)
     with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
         previous = lock_funding_eligibility(c, funding_id)
+        rules = canonical_rules(c, rules)
         if previous != change.expected:
             raise HTTPException(409, "Spending rules changed. Reload the funding record and review the latest rules.")
         change_funding_eligibility(c, funding_id, previous, rules, reason)
@@ -1005,39 +962,17 @@ def purchase_type_restriction(funding_id: int, change: PurchaseTypeRestriction):
     restriction = change.purchase_type.strip() if change.purchase_type is not None else None
     if restriction == "": bad("Restriction cannot be blank")
     with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
         previous = lock_funding_eligibility(c, funding_id)
+        restriction = canonical(c, "purchase_type", restriction) if restriction else None
         if len(previous["eligible_purchase_types"]) > 1:
             bad("Edit multiple purchase types using the spending rules form")
         rules = previous | {"eligible_purchase_types": [restriction] if restriction else []}
         change_funding_eligibility(c, funding_id, previous, rules, reason)
         return {"funding_id": funding_id, "purchase_type": restriction}
 
-class PasswordChange(BaseModel):
-    current_password: str = Field(max_length=1024)
-    new_password: str = Field(max_length=1024)
-
-@router.post("/auth/password")
-def change_password(p: PasswordChange, request: Request, response: Response):
-    try: validate_password(p.new_password)
-    except ValueError as e: raise HTTPException(422,str(e))
-    user=os.environ.get("STAFF_USER","staff")
-    with db() as c:
-        c.execute("SELECT pg_advisory_xact_lock(2663002)")
-        if not c.execute("SELECT 1 FROM staff_session WHERE token_hash=%s AND expires_at>now()",(token_hash(request.cookies[COOKIE]),)).fetchone(): raise HTTPException(401,"Staff session expired")
-        credential=c.execute("SELECT password_hash FROM staff_credential WHERE username=%s",(user,)).fetchone()
-        c.execute("DELETE FROM staff_login_attempt WHERE attempted_at<now()-interval '15 minutes'")
-        if c.execute("SELECT count(*) AS n FROM staff_login_attempt").fetchone()["n"]>=10: raise HTTPException(429,"Too many attempts")
-        valid=verify_password(p.current_password,credential["password_hash"])
-        if not valid: c.execute("INSERT INTO staff_login_attempt DEFAULT VALUES")
-        else:
-            if p.current_password==p.new_password: raise HTTPException(422,"Choose a different password")
-            c.execute("UPDATE staff_credential SET password_hash=%s,updated_at=now() WHERE username=%s",(hash_password(p.new_password),user))
-            c.execute("DELETE FROM staff_session")
-            c.execute("DELETE FROM staff_login_attempt")
-            audit(c,"password_changed","staff_account",0,{})
-    if not valid: raise HTTPException(401,"Current password incorrect")
-    response.delete_cookie(COOKIE,path="/",secure=os.getenv("SESSION_SECURE","1")!="0",httponly=True,samesite="strict")
-    return {"ok":True}
-
+register_auth(app, router, db, audit, staff)
+register_catalog(router, db, audit)
+register_ledger(router, db, audit, bad)
 register_receipts(router, db, audit, staff)
 app.include_router(router)

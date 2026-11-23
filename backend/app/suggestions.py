@@ -10,7 +10,7 @@ def suggest_allocations(rows, total, program, year, kind, supplier, purchase_dat
     for row in rows:
         if (row['program_code'], row['academic_year'], row['kind']) != (program, year, kind):
             continue
-        if row['expiry'] and row['expiry'] < max(purchase_date, date.today()):
+        if row['expiry'] and row['expiry'] < purchase_date:
             continue
         if spending_restriction(row, program, supplier, purchase_type):
             continue

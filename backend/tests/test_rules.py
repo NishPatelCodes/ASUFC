@@ -27,3 +27,16 @@ def test_duplicate_budget_rejected():
 def test_cross_year_rejected():
     with pytest.raises(ValueError, match="academic years"):
         check([split(cents=10000),split(budget_id=2,cents=15000,academic_year="2027-2028")])
+
+def test_late_entry_requires_reason():
+    expired = date.today() - timedelta(days=3)
+    rows = [split(expiry=expired)]
+    with pytest.raises(ValueError, match="late-entry reason"):
+        validate_purchase(25000, rows, expired, "Example supplier", today=date.today())
+    validate_purchase(25000, rows, expired, "Example supplier", today=date.today(), late_entry_reason="Receipt arrived late")
+
+def test_purchase_after_expiry_rejected_even_with_reason():
+    expired = date.today() - timedelta(days=3)
+    with pytest.raises(ValueError, match="Funding expired"):
+        validate_purchase(25000, [split(expiry=expired)], date.today(), "Example supplier",
+                          today=date.today(), late_entry_reason="Late")
